@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Calendar } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -12,10 +12,11 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  Legend,
 } from "recharts";
 
 /* ================= TYPES ================= */
-type TimeFilter = "Daily" | "Weekly" | "Monthly";
+type TimeFilter = "Hourly" | "Daily" | "Monthly";
 
 type TrendData = {
   time: string;
@@ -36,7 +37,113 @@ type Statistics = {
   avg_daily_usage: number;
   peak_usage: number;
   peak_hour: string;
+  total_days?: number;
 };
+
+type ApiResponse = {
+  success: boolean;
+  data: any[];
+  count: number;
+  message?: string;
+};
+
+type ApiResponseStats = {
+  success: boolean;
+  data: Statistics;
+};
+
+/* ================= ENERGY CONSUMPTION THRESHOLDS ================= */
+// Berdasarkan standar konsumsi listrik rumah tangga Indonesia & Internasional
+const ENERGY_THRESHOLDS = {
+  // DAILY (per hari dalam kWh)
+  daily: {
+    veryLow: 3,      // < 3 kWh/hari = Sangat rendah (rumah kecil, 1-2 orang, hemat listrik)
+    low: 8,          // 3-8 kWh/hari = Rendah (rumah sedang, 2-3 orang, penggunaan normal)
+    normal: 15,      // 8-15 kWh/hari = Normal (rumah sedang-besar, 3-4 orang)
+    high: 25,        // 15-25 kWh/hari = Tinggi (rumah besar, 4-5 orang, AC, water heater)
+    veryHigh: 25,    // > 25 kWh/hari = Sangat Tinggi (penggunaan berlebih, banyak AC, kolam renang)
+  },
+  // HOURLY (per jam dalam kWh)
+  hourly: {
+    veryLow: 0.1,    // < 0.1 kWh/jam = Sangat rendah (lampu & peralatan minimal)
+    low: 0.3,        // 0.1-0.3 kWh/jam = Rendah (lampu, TV, charger)
+    normal: 0.8,     // 0.3-0.8 kWh/jam = Normal (+ kulkas, kipas angin)
+    high: 1.5,       // 0.8-1.5 kWh/jam = Tinggi (+ AC 1 unit, komputer)
+    veryHigh: 1.5,   // > 1.5 kWh/jam = Sangat Tinggi (AC multiple, water heater, oven)
+  },
+  // MONTHLY (per bulan dalam kWh)
+  monthly: {
+    veryLow: 90,     // < 90 kWh/bulan = Sangat rendah (900 VA)
+    low: 240,        // 90-240 kWh/bulan = Rendah (1300 VA)
+    normal: 450,     // 240-450 kWh/bulan = Normal (2200 VA)
+    high: 750,       // 450-750 kWh/bulan = Tinggi (3500-4400 VA)
+    veryHigh: 750,   // > 750 kWh/bulan = Sangat Tinggi (5500 VA+)
+  }
+};
+
+/* ================= HELPER FUNCTION: GET ENERGY STATUS ================= */
+function getEnergyStatus(usage: number, period: 'hourly' | 'daily' | 'monthly'): {
+  status: string;
+  color: string;
+  description: string;
+} {
+  const thresholds = ENERGY_THRESHOLDS[period];
+  
+  if (usage < thresholds.veryLow) {
+    return {
+      status: 'Very Low',
+      color: 'bg-green-100 text-green-800',
+      description: 'Konsumsi sangat hemat'
+    };
+  } else if (usage < thresholds.low) {
+    return {
+      status: 'Low',
+      color: 'bg-green-100 text-green-700',
+      description: 'Konsumsi rendah'
+    };
+  } else if (usage < thresholds.normal) {
+    return {
+      status: 'Normal',
+      color: 'bg-blue-100 text-blue-700',
+      description: 'Konsumsi normal'
+    };
+  } else if (usage < thresholds.high) {
+    return {
+      status: 'High',
+      color: 'bg-yellow-100 text-yellow-700',
+      description: 'Konsumsi tinggi'
+    };
+  } else {
+    return {
+      status: 'Very High',
+      color: 'bg-red-100 text-red-700',
+      description: 'Konsumsi sangat tinggi'
+    };
+  }
+}
+
+/* ================= HELPER: CALCULATE COST ================= */
+// Tarif listrik Indonesia (rata-rata) per kWh
+const ELECTRICITY_RATES = {
+  R1_900VA: 1444.70,   // Rp per kWh untuk 900 VA
+  R1_1300VA: 1444.70,  // Rp per kWh untuk 1300 VA
+  R1_2200VA: 1444.70,  // Rp per kWh untuk 2200 VA (subsidi)
+  R2_3500VA: 1699.53,  // Rp per kWh untuk 3500-5500 VA (non-subsidi)
+};
+
+function calculateCost(kWh: number): { idr: number; usd: number } {
+  // Gunakan tarif rata-rata R1 2200VA (paling umum di Indonesia)
+  const costIDR = kWh * ELECTRICITY_RATES.R1_2200VA;
+  const costUSD = costIDR / 15500; // Kurs rata-rata USD to IDR
+  
+  return {
+    idr: costIDR,
+    usd: costUSD
+  };
+}
+
+/* ================= API CONFIG ================= */
+const API_BASE_URL = 'http://localhost:3001';
 
 /* ================= MAIN PAGE ================= */
 export default function EnergyUsageHistoryPage() {
@@ -47,27 +154,39 @@ export default function EnergyUsageHistoryPage() {
     total_energy: 0,
     avg_daily_usage: 0,
     peak_usage: 0,
-    peak_hour: "18:00",
+    peak_hour: "00:00",
+    total_days: 0,
   });
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
   /* ===== FETCH STATISTICS ===== */
   useEffect(() => {
     const fetchStatistics = async () => {
       try {
-        console.log('📡 Fetching statistics...');
-        const res = await fetch("http://localhost:3001/power/statistics?days=30");
+        console.log('📡 [Stats] Fetching statistics from ALL data...');
+        const res = await fetch(`${API_BASE_URL}/power/statistics`);
         
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          console.error('❌ [Stats] API error:', res.status);
+          return;
         }
         
-        const data = await res.json();
-        console.log('✅ Statistics received:', data);
-        setStatistics(data);
+        const response: ApiResponseStats = await res.json();
+        console.log('✅ [Stats] Raw response:', response);
+        
+        if (response.success && response.data) {
+          setStatistics({
+            total_energy: Number(response.data.total_energy) || 0,
+            avg_daily_usage: Number(response.data.avg_daily_usage) || 0,
+            peak_usage: Number(response.data.peak_usage) || 0,
+            peak_hour: response.data.peak_hour || "00:00",
+            total_days: Number(response.data.total_days) || 0,
+          });
+        }
+        
       } catch (err) {
-        console.error("❌ Failed to fetch statistics:", err);
+        console.error("❌ [Stats] Failed to fetch:", err);
       }
     };
 
@@ -76,62 +195,70 @@ export default function EnergyUsageHistoryPage() {
     return () => clearInterval(interval);
   }, []);
 
-  /* ===== FETCH TREND DATA BERDASARKAN FILTER ===== */
+  /* ===== FETCH TREND DATA BERDASARKAN FILTER (SEMUA DATA) ===== */
   useEffect(() => {
     const fetchTrendData = async () => {
-      console.log(`\n🔄 [${activeFilter}] Starting fetch...`);
+      console.log(`\n🔄 [${activeFilter}] Starting fetch ALL data...`);
       setLoading(true);
-      setError(null);
 
       try {
         let endpoint = "";
-        if (activeFilter === "Daily") {
-          endpoint = "http://localhost:3001/power/daily";
-        } else if (activeFilter === "Weekly") {
-          endpoint = "http://localhost:3001/power/weekly";
+        
+        if (activeFilter === "Hourly") {
+          endpoint = `${API_BASE_URL}/power/hourly/all`;
+        } else if (activeFilter === "Daily") {
+          endpoint = `${API_BASE_URL}/power/daily/all`;
         } else {
-          endpoint = "http://localhost:3001/power/monthly";
+          endpoint = `${API_BASE_URL}/power/monthly/all`;
         }
 
-        console.log(`📡 [${activeFilter}] Fetching from: ${endpoint}`);
+        console.log(`📡 [${activeFilter}] Endpoint: ${endpoint}`);
 
         const res = await fetch(endpoint);
         
-        console.log(`📨 [${activeFilter}] Response status: ${res.status}`);
-        
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          console.error(`❌ [${activeFilter}] HTTP ${res.status}`);
+          setTrendData([]);
+          return;
         }
         
-        const data = await res.json();
-        
-        console.log(`✅ [${activeFilter}] Data received:`, data);
-        console.log(`📊 [${activeFilter}] Data length: ${data.length}`);
+        const response: ApiResponse = await res.json();
+        console.log(`✅ [${activeFilter}] Raw response:`, response);
 
-        if (data.length === 0) {
-          console.warn(`⚠️ [${activeFilter}] Empty array returned from API`);
+        if (!response.success || !Array.isArray(response.data)) {
+          console.error(`❌ [${activeFilter}] Invalid response format`);
+          setTrendData([]);
+          return;
         }
 
-        // Format data untuk grafik
-        const formattedData = data.map((item: any) => ({
-          time: item.time || `Hour ${item.hour || 0}`,
-          energy: parseFloat(item.energy || item.total_energy || item.avg_energy || 0),
-          voltage: item.voltage ? parseFloat(item.voltage) : undefined,
-          current: item.current ? parseFloat(item.current) : undefined,
-          hour: item.hour ? parseInt(item.hour) : undefined,
-        }));
+        if (response.data.length === 0) {
+          console.warn(`⚠️ [${activeFilter}] Empty data array`);
+          setTrendData([]);
+          return;
+        }
 
-        console.log(`✨ [${activeFilter}] Formatted data:`, formattedData.slice(0, 3));
-        
+        console.log(`📊 [${activeFilter}] Processing ${response.data.length} records`);
+
+        // Format data
+        const formattedData: TrendData[] = response.data.map((item: any) => {
+          return {
+            time: item.time || `Point ${response.data.indexOf(item) + 1}`,
+            energy: Number(item.energy || item.total_energy) || 0,
+            voltage: item.voltage ? Number(item.voltage) : undefined,
+            current: item.current ? Number(item.current) : undefined,
+            hour: item.hour,
+          };
+        });
+
+        console.log(`✨ [${activeFilter}] Formatted count: ${formattedData.length}`);
         setTrendData(formattedData);
+        setLastUpdate(new Date());
         
       } catch (err) {
         console.error(`❌ [${activeFilter}] Fetch error:`, err);
-        setError(err instanceof Error ? err.message : "Unknown error");
         setTrendData([]);
       } finally {
         setLoading(false);
-        console.log(`🏁 [${activeFilter}] Fetch complete\n`);
       }
     };
 
@@ -142,27 +269,43 @@ export default function EnergyUsageHistoryPage() {
   useEffect(() => {
     const fetchDailyUsage = async () => {
       try {
-        console.log('📡 Fetching weekly data for bar chart...');
-        const res = await fetch("http://localhost:3001/power/weekly");
+        console.log('📡 [Bar] Fetching ALL daily data...');
+        const res = await fetch(`${API_BASE_URL}/power/daily/all`);
         
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+          console.error('❌ [Bar] API error:', res.status);
+          setDailyUsageData([]);
+          return;
         }
         
-        const data = await res.json();
-        console.log('✅ Weekly data for bar chart:', data);
+        const response: ApiResponse = await res.json();
+        console.log('✅ [Bar] Raw response:', response);
+
+        if (!response.success || !Array.isArray(response.data)) {
+          console.warn('⚠️ [Bar] Invalid format');
+          setDailyUsageData([]);
+          return;
+        }
         
-        const formatted = data.map((item: any) => ({
-          day: item.time,
-          usage: parseFloat(item.energy || item.total_energy || 0),
-          date: item.date || new Date().toISOString().split('T')[0],
+        if (response.data.length === 0) {
+          console.warn('⚠️ [Bar] No data');
+          setDailyUsageData([]);
+          return;
+        }
+
+        // Format data - ambil 30 terakhir untuk bar chart
+        const last30 = response.data.slice(-30);
+        const formatted: DailyUsageData[] = last30.map((item: any) => ({
+          day: item.day_name || item.time || 'Unknown',
+          usage: Number(item.energy || item.total_energy) || 0,
+          date: item.date || new Date().toISOString(),
         }));
 
-        console.log('✨ Formatted bar chart data:', formatted);
+        console.log('✨ [Bar] Formatted:', formatted.length, 'records');
         setDailyUsageData(formatted);
         
       } catch (err) {
-        console.error("❌ Failed to fetch daily usage:", err);
+        console.error("❌ [Bar] Failed:", err);
         setDailyUsageData([]);
       }
     };
@@ -172,44 +315,21 @@ export default function EnergyUsageHistoryPage() {
     return () => clearInterval(interval);
   }, []);
 
-  /* ===== HANDLE DATE RANGE PICKER ===== */
-  const handleDateRangeClick = () => {
-    alert("Date range picker - integrate react-datepicker if needed");
+  /* ===== MANUAL REFRESH ===== */
+  const handleRefresh = () => {
+    setActiveFilter(activeFilter); // Trigger useEffect
   };
 
   // Loading state
-  if (loading && trendData.length === 0) {
+  if (loading && trendData.length === 0 && dailyUsageData.length === 0) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading energy data...</p>
-          <p className="text-sm text-gray-500 mt-2">Fetching {activeFilter.toLowerCase()} view</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Error state
-  if (error && trendData.length === 0) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center bg-white p-8 rounded-2xl shadow-sm max-w-md">
-          <div className="text-red-500 text-5xl mb-4">⚠️</div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Error Loading Data</h2>
-          <p className="text-gray-600 mb-4">{error}</p>
-          <p className="text-sm text-gray-500 mb-4">
-            Please make sure:
-            <br />• Backend is running on http://localhost:3001
-            <br />• Database has data in hourly_energy table
-            <br />• Check browser console (F12) for details
+          <p className="text-gray-600 font-medium">Loading energy data...</p>
+          <p className="text-sm text-gray-500 mt-2">
+            Fetching ALL {activeFilter.toLowerCase()} data from database
           </p>
-          <button
-            onClick={() => window.location.reload()}
-            className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
-          >
-            Retry
-          </button>
         </div>
       </div>
     );
@@ -223,16 +343,21 @@ export default function EnergyUsageHistoryPage() {
           <h1 className="text-4xl font-bold text-gray-900">
             Energy Usage History
           </h1>
-          <p className="text-gray-600 mt-2">Historical tracking and analysis</p>
+          <p className="text-gray-600 mt-2">
+            Complete historical data from <span className="font-semibold text-blue-600">PostgreSQL Database</span>
+          </p>
+          <p className="text-sm text-gray-500 mt-1">
+            Last updated: {lastUpdate.toLocaleString('id-ID')}
+          </p>
         </div>
 
         <button
-          onClick={handleDateRangeClick}
-          className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+          onClick={handleRefresh}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
         >
-          <Calendar size={20} className="text-gray-600" />
-          <span className="text-sm font-medium text-gray-700">
-            Select Date Range
+          <RefreshCw size={20} />
+          <span className="text-sm font-medium">
+            Refresh Data
           </span>
         </button>
       </div>
@@ -240,7 +365,7 @@ export default function EnergyUsageHistoryPage() {
       {/* ================= TIME FILTER TABS ================= */}
       <div className="bg-white rounded-2xl p-6 mb-8 shadow-sm">
         <div className="flex gap-3">
-          {(["Daily", "Weekly", "Monthly"] as TimeFilter[]).map((filter) => (
+          {(["Hourly", "Daily", "Monthly"] as TimeFilter[]).map((filter) => (
             <button
               key={filter}
               onClick={() => setActiveFilter(filter)}
@@ -256,11 +381,61 @@ export default function EnergyUsageHistoryPage() {
         </div>
         
         {/* Data Count Indicator */}
-        <div className="mt-4 text-sm text-gray-600">
-          Showing <span className="font-semibold text-blue-600">{trendData.length}</span> data points
-          {activeFilter === "Daily" && " (Last 24 hours - hourly)"}
-          {activeFilter === "Weekly" && " (Last 7 days - daily)"}
-          {activeFilter === "Monthly" && " (Last 30 days - daily)"}
+        <div className="mt-4 flex items-center justify-between">
+          <div className="text-sm text-gray-600">
+            Showing <span className="font-semibold text-blue-600">{trendData.length}</span> data points
+            <span className="ml-2 text-gray-500">
+              ({activeFilter === "Hourly" && "All hourly records"}
+              {activeFilter === "Daily" && "All daily records"}
+              {activeFilter === "Monthly" && "All monthly records"})
+            </span>
+          </div>
+          
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-blue-600">
+              <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+              <span>Refreshing...</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ================= ENERGY THRESHOLD LEGEND ================= */}
+      <div className="bg-white rounded-2xl p-6 mb-8 shadow-sm">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">
+          Energy Consumption Thresholds (Daily)
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded bg-green-100"></div>
+            <span className="text-sm text-gray-700">
+              <span className="font-semibold">Very Low:</span> &lt; {ENERGY_THRESHOLDS.daily.veryLow} kWh
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded bg-green-100"></div>
+            <span className="text-sm text-gray-700">
+              <span className="font-semibold">Low:</span> {ENERGY_THRESHOLDS.daily.veryLow}-{ENERGY_THRESHOLDS.daily.low} kWh
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded bg-blue-100"></div>
+            <span className="text-sm text-gray-700">
+              <span className="font-semibold">Normal:</span> {ENERGY_THRESHOLDS.daily.low}-{ENERGY_THRESHOLDS.daily.normal} kWh
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded bg-yellow-100"></div>
+            <span className="text-sm text-gray-700">
+              <span className="font-semibold">High:</span> {ENERGY_THRESHOLDS.daily.normal}-{ENERGY_THRESHOLDS.daily.high} kWh
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded bg-red-100"></div>
+            <span className="text-sm text-gray-700">
+              <span className="font-semibold">Very High:</span> &gt; {ENERGY_THRESHOLDS.daily.high} kWh
+            </span>
+          </div>
         </div>
       </div>
 
@@ -269,12 +444,17 @@ export default function EnergyUsageHistoryPage() {
         
         {/* ===== ENERGY CONSUMPTION TREND (LINE CHART) ===== */}
         <div className="bg-white rounded-2xl p-8 shadow-sm">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">
-            Energy Consumption Trend ({activeFilter})
-          </h2>
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold text-gray-900">
+              Energy Consumption Trend
+            </h2>
+            <span className="text-xs bg-blue-100 text-blue-700 px-3 py-1 rounded-full font-medium">
+              {activeFilter} - ALL DATA
+            </span>
+          </div>
 
           {trendData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={350}>
+            <ResponsiveContainer width="100%" height={400}>
               <LineChart data={trendData}>
                 <CartesianGrid 
                   strokeDasharray="3 3" 
@@ -283,13 +463,13 @@ export default function EnergyUsageHistoryPage() {
                 />
                 <XAxis
                   dataKey="time"
-                  tick={{ fill: "#6b7280", fontSize: 11 }}
+                  tick={{ fill: "#6b7280", fontSize: 10 }}
                   axisLine={{ stroke: "#e5e7eb" }}
                   tickLine={false}
-                  angle={activeFilter === "Daily" ? -45 : 0}
-                  textAnchor={activeFilter === "Daily" ? "end" : "middle"}
-                  height={activeFilter === "Daily" ? 60 : 30}
-                  interval={activeFilter === "Daily" ? (trendData.length > 12 ? 1 : 0) : 0}
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  interval={Math.floor(trendData.length / 15)}
                 />
                 <YAxis
                   tick={{ fill: "#6b7280", fontSize: 12 }}
@@ -310,47 +490,49 @@ export default function EnergyUsageHistoryPage() {
                     padding: "12px",
                   }}
                   labelStyle={{ fontWeight: "600", marginBottom: 4 }}
-                  formatter={(value: any, name: string) => {
-                    if (name === "energy") return [`${value} kWh`, "Energy"];
-                    if (name === "voltage") return [`${value} V`, "Voltage"];
-                    if (name === "current") return [`${value} A`, "Current"];
-                    return [value, name];
+                  formatter={(value: any) => {
+                    const numValue = Number(value) || 0;
+                    return [`${numValue.toFixed(4)} kWh`, "Energy"];
                   }}
                 />
+                <Legend />
                 <Line
                   type="monotone"
                   dataKey="energy"
                   stroke="#3b82f6"
-                  strokeWidth={2.5}
-                  dot={activeFilter === "Daily" ? false : { r: 4, fill: "#3b82f6" }}
+                  strokeWidth={2}
+                  dot={trendData.length <= 100 ? { r: 3, fill: "#3b82f6" } : false}
                   activeDot={{ r: 6, fill: "#3b82f6" }}
-                  name="energy"
+                  name="Energy"
                 />
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <div className="h-[350px] flex items-center justify-center text-gray-500">
+            <div className="h-[400px] flex items-center justify-center text-gray-500">
               <div className="text-center">
                 <div className="text-4xl mb-2">📊</div>
                 <p className="font-medium">No data available</p>
                 <p className="text-sm mt-1">
-                  {activeFilter === "Daily" && "Check hourly_energy table"}
-                  {activeFilter === "Weekly" && "Check daily_energy table (last 7 days)"}
-                  {activeFilter === "Monthly" && "Check daily_energy table (last 30 days)"}
+                  {loading ? "Loading..." : "No data in database"}
                 </p>
               </div>
             </div>
           )}
         </div>
 
-        {/* ===== DAILY KWH USAGE (BAR CHART) ===== */}
+        {/* ===== DAILY USAGE COMPARISON (BAR CHART) ===== */}
         <div className="bg-white rounded-2xl p-8 shadow-sm">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">
-            Daily kWh Usage (Last 7 Days)
-          </h2>
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold text-gray-900">
+              Daily Usage Comparison
+            </h2>
+            <span className="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-medium">
+              Last {dailyUsageData.length} Days
+            </span>
+          </div>
 
           {dailyUsageData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={350}>
+            <ResponsiveContainer width="100%" height={400}>
               <BarChart data={dailyUsageData}>
                 <CartesianGrid 
                   strokeDasharray="3 3" 
@@ -359,9 +541,13 @@ export default function EnergyUsageHistoryPage() {
                 />
                 <XAxis
                   dataKey="day"
-                  tick={{ fill: "#6b7280", fontSize: 12 }}
+                  tick={{ fill: "#6b7280", fontSize: 11 }}
                   axisLine={{ stroke: "#e5e7eb" }}
                   tickLine={false}
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  interval={Math.floor(dailyUsageData.length / 10)}
                 />
                 <YAxis
                   tick={{ fill: "#6b7280", fontSize: 12 }}
@@ -382,22 +568,27 @@ export default function EnergyUsageHistoryPage() {
                     padding: "8px 12px",
                   }}
                   cursor={{ fill: "#f3f4f6", opacity: 0.3 }}
-                  formatter={(value: any) => [`${value} kWh`, "Usage"]}
+                  formatter={(value: any) => {
+                    const numValue = Number(value) || 0;
+                    return [`${numValue.toFixed(2)} kWh`, "Usage"];
+                  }}
                 />
+                <Legend />
                 <Bar
                   dataKey="usage"
                   fill="#10b981"
                   radius={[8, 8, 0, 0]}
                   maxBarSize={60}
+                  name="Daily Usage"
                 />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <div className="h-[350px] flex items-center justify-center text-gray-500">
+            <div className="h-[400px] flex items-center justify-center text-gray-500">
               <div className="text-center">
                 <div className="text-4xl mb-2">📊</div>
-                <p className="font-medium">No weekly data available</p>
-                <p className="text-sm mt-1">Check daily_energy table</p>
+                <p className="font-medium">No daily data</p>
+                <p className="text-sm mt-1">Waiting for data...</p>
               </div>
             </div>
           )}
@@ -408,39 +599,44 @@ export default function EnergyUsageHistoryPage() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mt-8">
         <StatCard
           title="Total Energy Used"
-          value={statistics.total_energy.toFixed(1)}
+          value={statistics.total_energy.toFixed(2)}
           unit="kWh"
-          change="+12.5%"
-          isPositive={false}
+          subtitle={`From ${statistics.total_days || 0} days of data`}
+          color="blue"
         />
         <StatCard
           title="Average Daily Usage"
-          value={statistics.avg_daily_usage.toFixed(2)}
+          value={statistics.avg_daily_usage.toFixed(3)}
           unit="kWh"
-          change="+5.2%"
-          isPositive={false}
+          subtitle={getEnergyStatus(statistics.avg_daily_usage, 'daily').description}
+          color="green"
         />
         <StatCard
           title="Peak Usage"
-          value={statistics.peak_usage.toFixed(2)}
+          value={statistics.peak_usage.toFixed(3)}
           unit="kWh"
-          change="Max"
-          isPositive={true}
+          subtitle="Maximum recorded"
+          color="orange"
         />
         <StatCard
           title="Peak Hour"
           value={statistics.peak_hour}
-          unit="Time"
-          change="Today"
-          isPositive={true}
+          unit=""
+          subtitle="Highest consumption"
+          color="purple"
         />
       </div>
 
       {/* ================= DETAILED TABLE ================= */}
       <div className="mt-8 bg-white rounded-2xl p-8 shadow-sm">
-        <h2 className="text-2xl font-bold text-gray-900 mb-6">
-          Detailed History (Last 7 Days)
-        </h2>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-gray-900">
+            Detailed History (Last {Math.min(dailyUsageData.length, 30)} Days)
+          </h2>
+          <span className="text-sm text-gray-500">
+            Total: {dailyUsageData.length} records
+          </span>
+        </div>
         
         <div className="overflow-x-auto">
           {dailyUsageData.length > 0 ? (
@@ -451,52 +647,81 @@ export default function EnergyUsageHistoryPage() {
                     Date
                   </th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">
+                    Day
+                  </th>
+                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">
                     Energy (kWh)
                   </th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">
-                    Cost ($)
+                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">
+                    Cost (IDR)
                   </th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">
+                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">
+                    Cost (USD)
+                  </th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-gray-700">
                     Status
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {dailyUsageData.map((item, index) => (
-                  <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition">
-                    <td className="py-3 px-4 text-sm text-gray-900">
-                      {item.day}, {new Date(item.date).toLocaleDateString('en-US', { 
-                        month: 'short', 
-                        day: 'numeric',
-                        year: 'numeric'
-                      })}
-                    </td>
-                    <td className="py-3 px-4 text-sm font-medium text-gray-900">
-                      {item.usage.toFixed(2)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900">
-                      ${(item.usage * 0.12).toFixed(2)}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        item.usage > 11
-                          ? "bg-red-100 text-red-700"
-                          : item.usage > 8.5
-                          ? "bg-yellow-100 text-yellow-700"
-                          : "bg-green-100 text-green-700"
-                      }`}>
-                        {item.usage > 11 ? "High" : item.usage > 8.5 ? "Normal" : "Low"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {dailyUsageData.slice(-30).map((item, index) => {
+                  const status = getEnergyStatus(item.usage, 'daily');
+                  const cost = calculateCost(item.usage);
+                  
+                  return (
+                    <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition">
+                      <td className="py-3 px-4 text-sm text-gray-900">
+                        {new Date(item.date).toLocaleDateString('en-US', { 
+                          month: 'short', 
+                          day: 'numeric',
+                          year: 'numeric'
+                        })}
+                      </td>
+                      <td className="py-3 px-4 text-sm font-medium text-gray-900">
+                        {item.day}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-right font-semibold text-gray-900">
+                        {item.usage.toFixed(3)}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-right text-gray-900">
+                        Rp {cost.idr.toLocaleString('id-ID', { maximumFractionDigits: 0 })}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-right text-gray-900">
+                        ${cost.usd.toFixed(2)}
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        <span 
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}
+                          title={status.description}
+                        >
+                          {status.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ) : (
             <div className="py-8 text-center text-gray-500">
-              No data available
+              <div className="text-4xl mb-2">📋</div>
+              <p className="font-medium">No historical data</p>
+              <p className="text-sm mt-2">Data will appear after collection</p>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ================= DATA SOURCE INFO ================= */}
+      <div className="mt-8 bg-green-50 border border-green-200 rounded-2xl p-4 flex items-center gap-3">
+        <div className="text-green-600 text-2xl">✅</div>
+        <div className="flex-1">
+          <p className="text-sm text-green-900 font-medium">
+            Data Source: PostgreSQL Database (ALL Data - No Time Filter)
+          </p>
+          <p className="text-xs text-green-700 mt-1">
+            Hourly: hourly_energy | Daily: daily_energy | Monthly: monthly_energy | Statistics: Aggregated from all records
+          </p>
         </div>
       </div>
     </div>
@@ -508,32 +733,39 @@ function StatCard({
   title,
   value,
   unit,
-  change,
-  isPositive,
+  subtitle,
+  color,
 }: {
   title: string;
   value: string;
   unit: string;
-  change: string;
-  isPositive: boolean;
+  subtitle: string;
+  color: "blue" | "green" | "orange" | "purple";
 }) {
+  const colorStyles = {
+    blue: "bg-blue-50 border-blue-200",
+    green: "bg-green-50 border-green-200",
+    orange: "bg-orange-50 border-orange-200",
+    purple: "bg-purple-50 border-purple-200",
+  };
+
+  const textColors = {
+    blue: "text-blue-700",
+    green: "text-green-700",
+    orange: "text-orange-700",
+    purple: "text-purple-700",
+  };
+
   return (
-    <div className="bg-white rounded-2xl p-6 shadow-sm hover:shadow-md transition">
+    <div className={`${colorStyles[color]} border rounded-2xl p-6 shadow-sm hover:shadow-md transition`}>
       <p className="text-sm text-gray-600 mb-2">{title}</p>
-      <div className="flex items-end gap-2 mb-3">
-        <span className="text-4xl font-bold text-gray-900">{value}</span>
-        <span className="text-lg text-gray-500 pb-1">{unit}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <span
-          className={`text-sm font-medium ${
-            isPositive ? "text-green-600" : "text-red-600"
-          }`}
-        >
-          {change}
+      <div className="flex items-end gap-2 mb-2">
+        <span className={`text-4xl font-bold ${textColors[color]}`}>
+          {value}
         </span>
-        <span className="text-xs text-gray-500">vs last period</span>
+        {unit && <span className="text-lg text-gray-500 pb-1">{unit}</span>}
       </div>
+      <p className="text-xs text-gray-500">{subtitle}</p>
     </div>
   );
 }

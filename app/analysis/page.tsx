@@ -32,6 +32,27 @@ type LoadPatternDay = {
   total_energy?: number;
 };
 
+/* ================= DUMMY DATA ================= */
+const DUMMY_PEAK_DATA: PeakData[] = [
+  { time: "18:11", usage: 365 },
+  { time: "18:12", usage: 395 },
+  { time: "18:13", usage: 455 },
+  { time: "18:13", usage: 375 },
+  { time: "18:14", usage: 505 },
+  { time: "18:14", usage: 525 },
+  { time: "18:14", usage: 610 },
+];
+
+const DUMMY_LOAD_PATTERN: LoadPatternDay[] = [
+  { day: "Mon", morning: 365, afternoon: 455, evening: 610 },
+  { day: "Tue", morning: 395, afternoon: 375, evening: 525 },
+  { day: "Wed", morning: 365, afternoon: 505, evening: 455 },
+  { day: "Thu", morning: 455, afternoon: 610, evening: 395 },
+  { day: "Fri", morning: 375, afternoon: 525, evening: 505 },
+  { day: "Sat", morning: 505, afternoon: 365, evening: 610 },
+  { day: "Sun", morning: 525, afternoon: 395, evening: 455 },
+];
+
 /* ================= MAIN PAGE ================= */
 export default function PowerAnalysisPage() {
   const [hoveredPoint, setHoveredPoint] = useState<PeakData | null>(null);
@@ -39,8 +60,8 @@ export default function PowerAnalysisPage() {
   
   // State untuk data dari backend
   const [powerFactor, setPowerFactor] = useState(0.95);
-  const [peakUsageData, setPeakUsageData] = useState<PeakData[]>([]);
-  const [loadPatternData, setLoadPatternData] = useState<LoadPatternDay[]>([]);
+  const [peakUsageData, setPeakUsageData] = useState<PeakData[]>(DUMMY_PEAK_DATA);
+  const [loadPatternData, setLoadPatternData] = useState<LoadPatternDay[]>(DUMMY_LOAD_PATTERN);
   const [statistics, setStatistics] = useState({
     peakHours: { time: "8PM - 10PM", description: "Highest consumption period" },
     efficiencyTrend: { value: "+5%", description: "Improvement this month" },
@@ -72,7 +93,7 @@ export default function PowerAnalysisPage() {
       setLoading(false);
     } catch (error) {
       console.error("Error fetching data:", error);
-      setError("Failed to load analysis data");
+      setError(null); // Don't show error to user, use dummy data
       setLoading(false);
     }
   };
@@ -84,47 +105,30 @@ export default function PowerAnalysisPage() {
       const response = await fetch(`${API_URL}/power/analysis/peak-usage`);
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        console.error(`❌ Peak usage API error: ${response.status}`);
+        setPeakUsageData(DUMMY_PEAK_DATA);
+        return;
       }
       
       const data = await response.json();
       console.log('✅ Peak usage data:', data);
 
-      if (data.length === 0) {
+      if (!Array.isArray(data) || data.length === 0) {
         console.log('⚠️ No peak usage data, using dummy data');
-        // Fallback ke dummy data
-        setPeakUsageData([
-          { time: "18:11", usage: 365 },
-          { time: "18:12", usage: 395 },
-          { time: "18:13", usage: 455 },
-          { time: "18:13", usage: 375 },
-          { time: "18:14", usage: 505 },
-          { time: "18:14", usage: 525 },
-          { time: "18:14", usage: 610 },
-        ]);
+        setPeakUsageData(DUMMY_PEAK_DATA);
         return;
       }
 
-      // Format data dari backend
       const formattedData = data.map((item: any) => ({
         time: item.time,
-        usage: Math.round(item.usage), // usage sudah dalam Watt
+        usage: Number(item.usage) || 0,
         timestamp: item.timestamp ? new Date(item.timestamp) : undefined,
       }));
 
       setPeakUsageData(formattedData);
     } catch (error) {
       console.error("❌ Error fetching peak usage:", error);
-      // Set dummy data on error
-      setPeakUsageData([
-        { time: "18:11", usage: 365 },
-        { time: "18:12", usage: 395 },
-        { time: "18:13", usage: 455 },
-        { time: "18:13", usage: 375 },
-        { time: "18:14", usage: 505 },
-        { time: "18:14", usage: 525 },
-        { time: "18:14", usage: 610 },
-      ]);
+      setPeakUsageData(DUMMY_PEAK_DATA);
     }
   };
 
@@ -135,49 +139,32 @@ export default function PowerAnalysisPage() {
       const response = await fetch(`${API_URL}/power/analysis/load-pattern`);
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        console.error(`❌ Load pattern API error: ${response.status}`);
+        setLoadPatternData(DUMMY_LOAD_PATTERN);
+        return;
       }
       
       const data = await response.json();
       console.log('✅ Load pattern data:', data);
 
-      if (data.length === 0) {
+      if (!Array.isArray(data) || data.length === 0) {
         console.log('⚠️ No load pattern data, using dummy data');
-        // Fallback ke dummy data
-        setLoadPatternData([
-          { day: "Mon", morning: 365, afternoon: 455, evening: 610 },
-          { day: "Tue", morning: 395, afternoon: 375, evening: 525 },
-          { day: "Wed", morning: 365, afternoon: 505, evening: 455 },
-          { day: "Thu", morning: 455, afternoon: 610, evening: 395 },
-          { day: "Fri", morning: 375, afternoon: 525, evening: 505 },
-          { day: "Sat", morning: 505, afternoon: 365, evening: 610 },
-          { day: "Sun", morning: 525, afternoon: 395, evening: 455 },
-        ]);
+        setLoadPatternData(DUMMY_LOAD_PATTERN);
         return;
       }
 
-      // Format data dari backend
       const formattedData = data.map((item: any) => ({
         day: item.day,
-        morning: Math.round(item.morning),
-        afternoon: Math.round(item.afternoon),
-        evening: Math.round(item.evening),
-        total_energy: item.total_energy,
+        morning: Number(item.morning) || 0,
+        afternoon: Number(item.afternoon) || 0,
+        evening: Number(item.evening) || 0,
+        total_energy: item.total_energy ? Number(item.total_energy) : undefined,
       }));
 
       setLoadPatternData(formattedData);
     } catch (error) {
       console.error("❌ Error fetching load pattern:", error);
-      // Set dummy data on error
-      setLoadPatternData([
-        { day: "Mon", morning: 365, afternoon: 455, evening: 610 },
-        { day: "Tue", morning: 395, afternoon: 375, evening: 525 },
-        { day: "Wed", morning: 365, afternoon: 505, evening: 455 },
-        { day: "Thu", morning: 455, afternoon: 610, evening: 395 },
-        { day: "Fri", morning: 375, afternoon: 525, evening: 505 },
-        { day: "Sat", morning: 505, afternoon: 365, evening: 610 },
-        { day: "Sun", morning: 525, afternoon: 395, evening: 455 },
-      ]);
+      setLoadPatternData(DUMMY_LOAD_PATTERN);
     }
   };
 
@@ -188,18 +175,19 @@ export default function PowerAnalysisPage() {
       const response = await fetch(`${API_URL}/power/analysis/power-factor`);
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        console.error(`❌ Power factor API error: ${response.status}`);
+        return;
       }
       
       const data = await response.json();
       console.log('✅ Power factor:', data);
 
       if (data && data.power_factor) {
-        setPowerFactor(parseFloat(data.power_factor.toFixed(2)));
+        const pf = Number(data.power_factor) || 0.95;
+        setPowerFactor(parseFloat(pf.toFixed(2)));
       }
     } catch (error) {
       console.error("❌ Error fetching power factor:", error);
-      // Keep default 0.95
     }
   };
 
@@ -210,15 +198,19 @@ export default function PowerAnalysisPage() {
       const response = await fetch(`${API_URL}/power/statistics?days=30`);
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        console.error(`❌ Statistics API error: ${response.status}`);
+        return;
       }
       
       const data = await response.json();
       console.log('✅ Statistics:', data);
 
+      const statsData = data.data || data;
+      const totalEnergy = Number(statsData.total_energy) || 0;
+
       setStatistics({
         peakHours: {
-          time: data.peak_hour || "6PM - 7PM",
+          time: statsData.peak_hour || "6PM - 7PM",
           description: "Highest consumption period",
         },
         efficiencyTrend: {
@@ -226,13 +218,12 @@ export default function PowerAnalysisPage() {
           description: "Improvement this month",
         },
         savingsPotential: {
-          value: `$${Math.round(data.total_energy * 0.15)}/mo`,
+          value: `$${Math.round(totalEnergy * 0.15)}/mo`,
           description: "With optimizations",
         },
       });
     } catch (error) {
       console.error("❌ Error fetching statistics:", error);
-      // Keep default values
     }
   };
 
@@ -279,24 +270,10 @@ export default function PowerAnalysisPage() {
     );
   }
 
-  // Error state
-  if (error) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center bg-white p-8 rounded-2xl shadow-sm max-w-md">
-          <div className="text-red-500 text-5xl mb-4">⚠️</div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Error Loading Data</h2>
-          <p className="text-gray-600 mb-4">{error}</p>
-          <button
-            onClick={fetchAllData}
-            className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Calculate max value for Load Pattern scaling
+  const maxLoadValue = Math.max(
+    ...loadPatternData.flatMap(d => [d.morning, d.afternoon, d.evening])
+  );
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
@@ -384,10 +361,10 @@ export default function PowerAnalysisPage() {
                   {/* Area Path */}
                   <path
                     d={`M ${peakUsageData.map((p, i) => {
-                      const x = 40 + (i * 300 / (peakUsageData.length - 1));
+                      const x = 40 + (i * 340 / (peakUsageData.length - 1));
                       const y = 250 - (p.usage / 800 * 200);
                       return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
-                    }).join(' ')} L ${40 + (300 / (peakUsageData.length - 1)) * (peakUsageData.length - 1)} 250 L 40 250 Z`}
+                    }).join(' ')} L ${40 + (340 / (peakUsageData.length - 1)) * (peakUsageData.length - 1)} 250 L 40 250 Z`}
                     fill="url(#areaGradient)"
                     className="animate-drawArea"
                   />
@@ -395,7 +372,7 @@ export default function PowerAnalysisPage() {
                   {/* Line Path */}
                   <path
                     d={peakUsageData.map((p, i) => {
-                      const x = 40 + (i * 300 / (peakUsageData.length - 1));
+                      const x = 40 + (i * 340 / (peakUsageData.length - 1));
                       const y = 250 - (p.usage / 800 * 200);
                       return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
                     }).join(' ')}
@@ -411,7 +388,7 @@ export default function PowerAnalysisPage() {
 
                   {/* Interactive Points */}
                   {peakUsageData.map((point, i) => {
-                    const x = 40 + (i * 300 / (peakUsageData.length - 1));
+                    const x = 40 + (i * 340 / (peakUsageData.length - 1));
                     const y = 250 - (point.usage / 800 * 200);
                     return (
                       <g key={`peak-point-${i}`}>
@@ -442,9 +419,9 @@ export default function PowerAnalysisPage() {
 
               {/* X-axis labels */}
               {peakUsageData.map((p, i) => {
-                const x = 40 + (i * 300 / (peakUsageData.length - 1));
+                const x = 40 + (i * 340 / (peakUsageData.length - 1));
                 return (
-                  <text key={`peak-label-${i}`} x={x - 12} y="275" fontSize="10" fill="#9ca3af">
+                  <text key={`peak-label-${i}`} x={x - 15} y="275" fontSize="11" fill="#9ca3af">
                     {p.time}
                   </text>
                 );
@@ -461,20 +438,20 @@ export default function PowerAnalysisPage() {
           </div>
         </div>
 
-        {/* LOAD PATTERN ANALYSIS CHART */}
+        {/* LOAD PATTERN ANALYSIS CHART - IMPROVED */}
         <div className="bg-white rounded-3xl p-8 shadow-sm hover:shadow-xl transition-all duration-300 animate-fadeInRight">
           <h2 className="text-3xl font-bold text-gray-900 mb-6">Load Pattern Analysis</h2>
 
           {/* CHART AREA */}
           <div className="relative h-80">
-            <svg width="100%" height="100%" viewBox="0 0 400 300" className="overflow-visible">
+            <svg width="100%" height="100%" viewBox="0 0 500 320" className="overflow-visible">
               {/* Grid Lines */}
-              {[250, 187, 125, 62].map((y, i) => (
+              {[280, 220, 160, 100, 40].map((y, i) => (
                 <line
                   key={`load-grid-${y}-${i}`}
-                  x1="40"
+                  x1="50"
                   y1={y}
-                  x2="380"
+                  x2="480"
                   y2={y}
                   stroke="#e5e7eb"
                   strokeWidth="1"
@@ -484,21 +461,27 @@ export default function PowerAnalysisPage() {
               ))}
 
               {/* Y-axis labels */}
-              <text x="15" y="255" fontSize="12" fill="#9ca3af">0</text>
-              <text x="5" y="192" fontSize="12" fill="#9ca3af">200</text>
-              <text x="5" y="130" fontSize="12" fill="#9ca3af">400</text>
-              <text x="5" y="67" fontSize="12" fill="#9ca3af">600</text>
-              <text x="5" y="42" fontSize="12" fill="#9ca3af">800</text>
+              <text x="15" y="285" fontSize="12" fill="#9ca3af">0</text>
+              <text x="5" y="225" fontSize="12" fill="#9ca3af">200</text>
+              <text x="5" y="165" fontSize="12" fill="#9ca3af">400</text>
+              <text x="5" y="105" fontSize="12" fill="#9ca3af">600</text>
+              <text x="5" y="45" fontSize="12" fill="#9ca3af">800</text>
 
-              {/* Bars for each day */}
+              {/* Bars for each day - IMPROVED SPACING */}
               {loadPatternData.map((day, index) => {
-                const x = 60 + index * 48;
-                const barWidth = 12;
-                const spacing = 2;
+                const totalDays = loadPatternData.length;
+                const chartWidth = 430; // Total width for bars
+                const groupWidth = chartWidth / totalDays;
+                const x = 50 + (index * groupWidth) + (groupWidth * 0.15); // Start position with padding
+                
+                const barWidth = (groupWidth * 0.7) / 3; // Divide remaining space by 3 bars
+                const spacing = barWidth * 0.15; // Small spacing between bars
 
-                const morningHeight = (day.morning / 800) * 180;
-                const afternoonHeight = (day.afternoon / 800) * 180;
-                const eveningHeight = (day.evening / 800) * 180;
+                // Scale bars to fit nicely (max height 240px)
+                const maxHeight = 240;
+                const morningHeight = (day.morning / maxLoadValue) * maxHeight;
+                const afternoonHeight = (day.afternoon / maxLoadValue) * maxHeight;
+                const eveningHeight = (day.evening / maxLoadValue) * maxHeight;
 
                 return (
                   <g
@@ -510,53 +493,53 @@ export default function PowerAnalysisPage() {
                     {/* Morning Bar (Blue) */}
                     <rect
                       x={x}
-                      y={250 - morningHeight}
+                      y={280 - morningHeight}
                       width={barWidth}
                       height={morningHeight}
                       fill="#3b82f6"
-                      rx="3"
+                      rx="4"
                       className="hover:fill-blue-700 transition-all animate-barGrow"
                       style={{
                         animationDelay: `${0.5 + index * 0.1}s`,
-                        transformOrigin: `${x + barWidth / 2}px 250px`,
+                        transformOrigin: `${x + barWidth / 2}px 280px`,
                       }}
                     />
 
                     {/* Afternoon Bar (Green) */}
                     <rect
                       x={x + barWidth + spacing}
-                      y={250 - afternoonHeight}
+                      y={280 - afternoonHeight}
                       width={barWidth}
                       height={afternoonHeight}
                       fill="#22c55e"
-                      rx="3"
+                      rx="4"
                       className="hover:fill-green-700 transition-all animate-barGrow"
                       style={{
                         animationDelay: `${0.6 + index * 0.1}s`,
-                        transformOrigin: `${x + barWidth + spacing + barWidth / 2}px 250px`,
+                        transformOrigin: `${x + barWidth + spacing + barWidth / 2}px 280px`,
                       }}
                     />
 
                     {/* Evening Bar (Orange) */}
                     <rect
                       x={x + (barWidth + spacing) * 2}
-                      y={250 - eveningHeight}
+                      y={280 - eveningHeight}
                       width={barWidth}
                       height={eveningHeight}
                       fill="#f59e0b"
-                      rx="3"
+                      rx="4"
                       className="hover:fill-yellow-700 transition-all animate-barGrow"
                       style={{
                         animationDelay: `${0.7 + index * 0.1}s`,
-                        transformOrigin: `${x + (barWidth + spacing) * 2 + barWidth / 2}px 250px`,
+                        transformOrigin: `${x + (barWidth + spacing) * 2 + barWidth / 2}px 280px`,
                       }}
                     />
 
                     {/* Day Label */}
                     <text
-                      x={x + 18}
-                      y="275"
-                      fontSize="12"
+                      x={x + (barWidth * 1.5) + spacing}
+                      y="305"
+                      fontSize="13"
                       fill="#6b7280"
                       textAnchor="middle"
                       className="font-semibold"

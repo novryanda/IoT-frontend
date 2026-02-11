@@ -29,31 +29,47 @@ type LiveChartData = {
   power: number;
 };
 
+// ✅ NEW: API Response Type
+type ApiResponse = {
+  success: boolean;
+  data: RawPowerData[];
+  count: number;
+};
+
 /* ================= PAGE ================= */
 export default function RealtimeMonitoringPage() {
   const [last7Data, setLast7Data] = useState<RawPowerData[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isLive, setIsLive] = useState(true);
 
-  /* ===== FETCH 7 DATA TERAKHIR DARI DATABASE ===== */
+  /* ===== FETCH 7 DATA TERAKHIR DARI HOURLY_ENERGY TABLE ===== */
   useEffect(() => {
     const fetch7Data = async () => {
       try {
-        console.log('📡 Fetching 7 latest data from database...');
+        console.log('📡 Fetching 7 latest data from hourly_energy table...');
         
         const res = await fetch("http://localhost:3001/power/last7");
-        const json: RawPowerData[] = await res.json();
         
-        console.log('✅ Received', json.length, 'records');
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+
+        // ✅ FIX: Parse the new response structure
+        const json: ApiResponse = await res.json();
         
-        if (json && json.length > 0) {
-          setLast7Data(json);
+        console.log('✅ API Response:', json);
+        
+        // ✅ FIX: Extract data array from response object
+        if (json.success && json.data && json.data.length > 0) {
+          console.log(`✅ Received ${json.data.length} records from hourly_energy`);
+          setLast7Data(json.data);
           setIsLive(true);
         } else {
+          console.warn('⚠️ No data received or empty data array');
           setIsLive(false);
         }
       } catch (e) {
-        console.error("API error", e);
+        console.error("❌ API error:", e);
         setIsLive(false);
       }
     };
@@ -73,7 +89,7 @@ export default function RealtimeMonitoringPage() {
 
     const cycleInterval = setInterval(() => {
       setCurrentIndex((prevIndex) => (prevIndex + 1) % last7Data.length);
-    }, 3000); // Change to next record every 3 seconds
+    }, 3000);
 
     return () => clearInterval(cycleInterval);
   }, [last7Data]);
@@ -87,7 +103,8 @@ export default function RealtimeMonitoringPage() {
             animate={{ rotate: 360 }}
             transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
           />
-          <p className="text-gray-600">Loading 7 latest records...</p>
+          <p className="text-gray-600">Loading 7 latest records from hourly_energy...</p>
+          <p className="text-gray-400 text-sm mt-2">Connecting to database...</p>
         </div>
       </div>
     );
@@ -96,13 +113,13 @@ export default function RealtimeMonitoringPage() {
   // Current data being displayed
   const currentData = last7Data[currentIndex];
 
-  // Prepare chart data from all 7 records
+  // ✅ FIX: Safely convert data to numbers
   const chartData: LiveChartData[] = last7Data.map((item) => ({
     time: new Date(item.created_at).toLocaleTimeString("id-ID", {
       hour: "2-digit",
       minute: "2-digit",
     }),
-    power: item.daya_watt,
+    power: Number(item.daya_watt) || 0,
   }));
 
   return (
@@ -117,7 +134,9 @@ export default function RealtimeMonitoringPage() {
           <h1 className="text-4xl font-bold text-gray-900">
             Real-time Monitoring
           </h1>
-          <p className="text-gray-600 mt-2">Cycling through last 7 database records</p>
+          <p className="text-gray-600 mt-2">
+            Live data from <span className="font-semibold text-blue-600">hourly_energy</span> table
+          </p>
         </div>
 
         {/* LIVE BADGE */}
@@ -167,7 +186,7 @@ export default function RealtimeMonitoringPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <GaugeCard
           title="Voltage"
-          value={currentData?.tegangan ?? 0}
+          value={Number(currentData?.tegangan) || 0}
           unit="V"
           max={250}
           color="#3b82f6"
@@ -176,7 +195,7 @@ export default function RealtimeMonitoringPage() {
 
         <GaugeCard
           title="Current"
-          value={currentData?.arus ?? 0}
+          value={Number(currentData?.arus) || 0}
           unit="A"
           max={10}
           color="#10b981"
@@ -185,7 +204,7 @@ export default function RealtimeMonitoringPage() {
 
         <GaugeCard
           title="Power"
-          value={currentData?.daya_watt ?? 0}
+          value={Number(currentData?.daya_watt) || 0}
           unit="W"
           max={2000}
           color="#f59e0b"
@@ -197,26 +216,31 @@ export default function RealtimeMonitoringPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <MetricCard
           title="Frequency"
-          value={currentData?.frekuensi ?? 0}
+          value={Number(currentData?.frekuensi) || 50}
           unit="Hz"
           icon="📡"
-          status={(currentData?.frekuensi ?? 0) >= 45 && (currentData?.frekuensi ?? 0) <= 55 ? "Stable" : "Unstable"}
+          status={
+            (Number(currentData?.frekuensi) || 0) >= 49 && 
+            (Number(currentData?.frekuensi) || 0) <= 51 
+              ? "Stable" 
+              : "Unstable"
+          }
         />
 
         <MetricCard
           title="Power Factor"
-          value={currentData?.pf ?? 0}
+          value={Number(currentData?.pf) || 0}
           unit=""
           icon="⚡"
-          status={(currentData?.pf ?? 0) > 0.8 ? "Good" : "Poor"}
+          status={(Number(currentData?.pf) || 0) > 0.8 ? "Good" : "Poor"}
         />
 
         <MetricCard
           title="Energy Used"
-          value={currentData?.energi_kwh ?? 0}
+          value={Number(currentData?.energi_kwh) || 0}
           unit="kWh"
           icon="🔋"
-          status={(currentData?.energi_kwh ?? 0) < 2 ? "Efficient" : "High"}
+          status={(Number(currentData?.energi_kwh) || 0) < 2 ? "Efficient" : "High"}
         />
       </div>
 
@@ -228,14 +252,14 @@ export default function RealtimeMonitoringPage() {
         className="bg-white rounded-3xl p-8 shadow-lg"
       >
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold">All 7 Records Power Consumption</h2>
+          <h2 className="text-2xl font-bold">Power Consumption Trend</h2>
           <div className="flex items-center gap-2 text-sm text-gray-600">
             <motion.span 
               animate={{ scale: [1, 1.3, 1] }}
               transition={{ duration: 2, repeat: Infinity }}
               className="h-2 w-2 bg-blue-500 rounded-full"
             />
-            <span>Showing all 7 database records</span>
+            <span>Last 7 records from hourly_energy</span>
           </div>
         </div>
 
@@ -293,7 +317,7 @@ export default function RealtimeMonitoringPage() {
         <div className="mt-4 flex items-center justify-center gap-6 text-sm">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-            <span className="text-gray-600">7 Records</span>
+            <span className="text-gray-600">Historical</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-red-500 rounded-full"></div>
@@ -302,12 +326,12 @@ export default function RealtimeMonitoringPage() {
           <div className="flex items-center gap-2">
             <span className="text-gray-500">Now: </span>
             <motion.span 
-              key={currentData?.daya_watt ?? 0}
+              key={Number(currentData?.daya_watt) || 0}
               initial={{ scale: 1.2, color: "#3b82f6" }}
               animate={{ scale: 1, color: "#2563eb" }}
               className="font-bold"
             >
-              {currentData?.daya_watt ?? 0} W
+              {Number(currentData?.daya_watt) || 0} W
             </motion.span>
           </div>
         </div>
@@ -320,7 +344,7 @@ export default function RealtimeMonitoringPage() {
         transition={{ delay: 0.4 }}
         className="bg-white rounded-3xl p-8 shadow-lg overflow-hidden"
       >
-        <h2 className="text-2xl font-bold mb-6">All 7 Records Data Table</h2>
+        <h2 className="text-2xl font-bold mb-6">Latest 7 Records from Database</h2>
         
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -332,7 +356,6 @@ export default function RealtimeMonitoringPage() {
                 <th className="px-4 py-3 text-right text-sm font-bold text-gray-700">Current (A)</th>
                 <th className="px-4 py-3 text-right text-sm font-bold text-gray-700">Power (W)</th>
                 <th className="px-4 py-3 text-right text-sm font-bold text-gray-700">Energy (kWh)</th>
-                <th className="px-4 py-3 text-right text-sm font-bold text-gray-700">Freq (Hz)</th>
                 <th className="px-4 py-3 text-right text-sm font-bold text-gray-700">PF</th>
               </tr>
             </thead>
@@ -359,12 +382,21 @@ export default function RealtimeMonitoringPage() {
                   <td className="px-4 py-3 text-sm text-gray-600">
                     {new Date(item.created_at).toLocaleTimeString("id-ID")}
                   </td>
-                  <td className="px-4 py-3 text-sm text-right font-semibold">{item.tegangan}</td>
-                  <td className="px-4 py-3 text-sm text-right font-semibold">{item.arus}</td>
-                  <td className="px-4 py-3 text-sm text-right font-semibold">{item.daya_watt}</td>
-                  <td className="px-4 py-3 text-sm text-right font-semibold">{item.energi_kwh}</td>
-                  <td className="px-4 py-3 text-sm text-right font-semibold">{item.frekuensi}</td>
-                  <td className="px-4 py-3 text-sm text-right font-semibold">{item.pf}</td>
+                  <td className="px-4 py-3 text-sm text-right font-semibold">
+                    {Number(item.tegangan).toFixed(1)}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-right font-semibold">
+                    {Number(item.arus).toFixed(2)}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-right font-semibold">
+                    {Number(item.daya_watt).toFixed(0)}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-right font-semibold">
+                    {Number(item.energi_kwh).toFixed(3)}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-right font-semibold">
+                    {Number(item.pf).toFixed(2)}
+                  </td>
                 </motion.tr>
               ))}
             </tbody>
@@ -382,7 +414,7 @@ export default function RealtimeMonitoringPage() {
         <div className="text-green-600 text-2xl">✅</div>
         <div className="flex-1">
           <p className="text-sm text-green-900 font-medium">
-            Data Source: MySQL Database (power_logs table)
+            Data Source: PostgreSQL Database (hourly_energy table)
           </p>
           <p className="text-xs text-green-700 mt-1">
             Fetching 7 latest records every 5 seconds | Auto-cycling display every 3 seconds
@@ -409,7 +441,8 @@ function GaugeCard({
   color: string;
   recordNumber: number;
 }) {
-  const safeValue = value ?? 0;
+  // ✅ Convert to number safely
+  const safeValue = Number(value) || 0;
   const percentage = Math.min((safeValue / max) * 100, 100);
   const circumference = 2 * Math.PI * 90;
   const strokeDashoffset = circumference - (percentage / 100) * circumference;
@@ -506,7 +539,8 @@ function MetricCard({
   icon: string;
   status: string;
 }) {
-  const safeValue = value ?? 0;
+  // ✅ Convert to number safely
+  const safeValue = Number(value) || 0;
   
   return (
     <motion.div 

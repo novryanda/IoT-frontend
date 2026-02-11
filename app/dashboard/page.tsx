@@ -35,7 +35,7 @@ type RawPowerData = {
   arus: number;
   daya_watt: number;
   energi_kwh: number;
-  frekuensi: number;
+  frekuensi?: number;
   pf: number;
   created_at: string;
 };
@@ -47,6 +47,9 @@ type ChartData = {
   daya: number;
 };
 
+/* ================= API CONFIG ================= */
+const API_BASE_URL = 'http://localhost:3001';
+
 /* ================= PAGE ================= */
 export default function DashboardPage() {
   // 7 data terakhir untuk semua keperluan
@@ -57,6 +60,7 @@ export default function DashboardPage() {
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [systemOnline, setSystemOnline] = useState<boolean>(true);
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
   /* ===== FETCH 7 DATA TERAKHIR DARI DATABASE ===== */
   useEffect(() => {
@@ -64,36 +68,98 @@ export default function DashboardPage() {
       try {
         console.log('📡 Fetching 7 latest data from database...');
         
-        // Fetch 7 data terakhir
-        const res = await fetch("http://localhost:3001/power/last7");
-        const json: RawPowerData[] = await res.json();
+        const res = await fetch(`${API_BASE_URL}/power/last7`);
+        
+        if (!res.ok) {
+          const errorText = await res.text();
+          console.error('❌ API Error:', res.status, errorText);
+          setSystemOnline(false);
+          setLoading(false);
+          setError(`Failed to fetch data: ${res.status}`);
+          return;
+        }
 
-        console.log('✅ Received', json.length, 'records');
-        console.log('📊 Data:', json);
+        const response = await res.json();
+        console.log('✅ Raw response:', response);
 
-        if (json && json.length > 0) {
-          setLast7Data(json);
+        // ✅ FIX: Extract data from wrapper { success, data, count }
+        let data: RawPowerData[] = [];
+        
+        if (response.success !== undefined && response.data !== undefined) {
+          data = response.data;
+          console.log('📦 Extracted data from wrapper:', data);
+        } else if (Array.isArray(response)) {
+          data = response;
+          console.log('📦 Direct array response:', data);
+        } else {
+          console.error('❌ Unexpected response format:', response);
+          setSystemOnline(false);
+          setLoading(false);
+          return;
+        }
+
+        if (!Array.isArray(data)) {
+          console.error('❌ Data is not an array:', data);
+          setSystemOnline(false);
+          setLoading(false);
+          return;
+        }
+
+        console.log('✅ Received', data.length, 'records');
+        console.log('📊 First record:', data[0]);
+        console.log('📊 Last record:', data[data.length - 1]);
+
+        if (data && data.length > 0) {
+          // ✅ Convert all numeric values properly
+          const processedData = data.map(item => ({
+            id: item.id,
+            tegangan: Number(item.tegangan) || 0,
+            arus: Number(item.arus) || 0,
+            daya_watt: Number(item.daya_watt) || 0,
+            energi_kwh: Number(item.energi_kwh) || 0,
+            frekuensi: Number(item.frekuensi) || 50,
+            pf: Number(item.pf) || 0.95,
+            created_at: item.created_at,
+          }));
+
+          console.log('✨ Processed data:', processedData);
+
+          setLast7Data(processedData);
           
           // Map untuk chart (Voltage, Current, Power)
-          const mapped: ChartData[] = json.map((item) => ({
-            time: new Date(item.created_at).toLocaleTimeString("id-ID", {
+          const mapped: ChartData[] = processedData.map((item, index) => {
+            const date = new Date(item.created_at);
+            const timeLabel = date.toLocaleTimeString("id-ID", {
               hour: "2-digit",
               minute: "2-digit",
-            }),
-            tegangan: item.tegangan,
-            arus: item.arus,
-            daya: item.daya_watt,
-          }));
+            });
+
+            return {
+              time: timeLabel,
+              tegangan: item.tegangan,
+              arus: item.arus,
+              daya: item.daya_watt,
+            };
+          });
+
+          console.log('📈 Chart data:', mapped);
 
           setChartData(mapped);
           setLastUpdated(new Date().toLocaleTimeString("id-ID"));
           setSystemOnline(true);
           setLoading(false);
+          setError(null);
+        } else {
+          console.warn('⚠️ No data received');
+          setSystemOnline(true);
+          setLoading(false);
+          setError('No data available yet');
         }
       } catch (e) {
-        console.error("Failed to fetch 7 data", e);
+        console.error("❌ Failed to fetch 7 data:", e);
         setSystemOnline(false);
         setLoading(false);
+        setError(e instanceof Error ? e.message : 'Unknown error');
       }
     };
 
@@ -104,12 +170,65 @@ export default function DashboardPage() {
   }, []);
 
   // Loading state
-  if (loading || last7Data.length === 0) {
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600 mx-auto"></div>
           <p className="mt-4 text-xl text-gray-600">Loading dashboard...</p>
+          <p className="mt-2 text-sm text-gray-500">Fetching data from {API_BASE_URL}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error && last7Data.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center max-w-md">
+          <div className="text-red-500 text-6xl mb-4">⚠️</div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">No Data Available</h2>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-left">
+            <p className="text-sm text-blue-900 font-semibold mb-2">Troubleshooting:</p>
+            <ul className="text-sm text-blue-800 space-y-1">
+              <li>• Check if backend is running at {API_BASE_URL}</li>
+              <li>• Verify MQTT device is sending data</li>
+              <li>• Check if hourly_energy table has records</li>
+              <li>• Wait for data to be saved (batch interval: 1 minute)</li>
+            </ul>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-6 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // No data state
+  if (last7Data.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center max-w-md">
+          <div className="text-gray-400 text-6xl mb-4">📊</div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Waiting for Data</h2>
+          <p className="text-gray-600 mb-4">
+            No records found in the database yet.
+          </p>
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <p className="text-sm text-yellow-900">
+              Make sure your IoT device is sending data via MQTT.
+              Data is saved every 1 minute to the database.
+            </p>
+          </div>
+          <div className="mt-4 text-sm text-gray-500">
+            Auto-refreshing every 10 seconds...
+          </div>
         </div>
       </div>
     );
@@ -125,7 +244,7 @@ export default function DashboardPage() {
   const powerStatus = latest.daya_watt < 2000 ? "Normal" : "High";
   const energyStatus = latest.energi_kwh < 2 ? "Efficient" : "High";
   const freqStatus =
-    latest.frekuensi >= 49 && latest.frekuensi <= 61 ? "Stable" : "Unstable";
+    (latest.frekuensi || 50) >= 49 && (latest.frekuensi || 50) <= 61 ? "Stable" : "Unstable";
   const pfStatus = latest.pf > 0.8 ? "Good" : "Poor";
 
   /* ===== CALCULATE SUMMARY DATA ===== */
@@ -171,7 +290,7 @@ export default function DashboardPage() {
         <div className="text-blue-600 text-3xl">📊</div>
         <div className="flex-1">
           <p className="text-sm text-blue-900 font-bold">
-            Displaying Last 7 Records from Database
+            Displaying Last {last7Data.length} Records from Hourly Energy Table
           </p>
           <p className="text-xs text-blue-700 mt-1">
             Showing {last7Data.length} records | Auto-refresh every 10 seconds | 
@@ -190,27 +309,69 @@ export default function DashboardPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <MetricCard label="Voltage" value={latest.tegangan} unit="V" status={voltageStatus} icon={<Gauge />} delay="0.1s" />
-          <MetricCard label="Current" value={latest.arus} unit="A" status={currentStatus} icon={<Activity />} delay="0.2s" />
-          <MetricCard label="Power" value={latest.daya_watt} unit="Watt" status={powerStatus} icon={<Zap />} delay="0.3s" />
-          <MetricCard label="Energy Used" value={latest.energi_kwh} unit="kWh" status={energyStatus} icon={<Battery />} delay="0.4s" />
-          <MetricCard label="Frequency" value={latest.frekuensi} unit="Hz" status={freqStatus} icon={<Radio />} delay="0.5s" />
-          <MetricCard label="Power Factor" value={latest.pf} unit="" status={pfStatus} icon={<TrendingUp />} delay="0.6s" />
+          <MetricCard 
+            label="Voltage" 
+            value={Number(latest.tegangan.toFixed(2))} 
+            unit="V" 
+            status={voltageStatus} 
+            icon={<Gauge />} 
+            delay="0.1s" 
+          />
+          <MetricCard 
+            label="Current" 
+            value={Number(latest.arus.toFixed(2))} 
+            unit="A" 
+            status={currentStatus} 
+            icon={<Activity />} 
+            delay="0.2s" 
+          />
+          <MetricCard 
+            label="Power" 
+            value={Number(latest.daya_watt.toFixed(2))} 
+            unit="Watt" 
+            status={powerStatus} 
+            icon={<Zap />} 
+            delay="0.3s" 
+          />
+          <MetricCard 
+            label="Energy Used" 
+            value={Number(latest.energi_kwh.toFixed(4))} 
+            unit="kWh" 
+            status={energyStatus} 
+            icon={<Battery />} 
+            delay="0.4s" 
+          />
+          <MetricCard 
+            label="Frequency" 
+            value={Number((latest.frekuensi || 50).toFixed(2))} 
+            unit="Hz" 
+            status={freqStatus} 
+            icon={<Radio />} 
+            delay="0.5s" 
+          />
+          <MetricCard 
+            label="Power Factor" 
+            value={Number(latest.pf.toFixed(2))} 
+            unit="" 
+            status={pfStatus} 
+            icon={<TrendingUp />} 
+            delay="0.6s" 
+          />
         </div>
       </section>
 
       {/* ================= 7 DATA TRENDS ================= */}
       <section className="mt-12 bg-gray-50 rounded-3xl p-8 space-y-6 animate-fadeIn">
         <h2 className="text-4xl font-bold text-black">
-          Last 7 Records Trends
+          Last {last7Data.length} Records Trends
         </h2>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* ===== POWER OVER TIME (7 DATA) ===== */}
           <div className="rounded-3xl border border-gray-200 bg-white p-8 shadow-sm hover:shadow-xl transition-all duration-300 min-h-100 animate-slideInLeft">
-            <h3 className="text-2xl font-bold mb-4">Power Consumption (7 Records)</h3>
+            <h3 className="text-2xl font-bold mb-4">Power Consumption ({last7Data.length} Records)</h3>
             <p className="text-sm text-gray-600 mb-6">
-              Average: {avgPower} W | Latest: {latest.daya_watt} W
+              Average: {avgPower} W | Latest: {latest.daya_watt.toFixed(2)} W
             </p>
 
             <ResponsiveContainer width="100%" height={350}>
@@ -228,12 +389,16 @@ export default function DashboardPage() {
                   tick={{ fill: "#6b7280", fontSize: 12 }} 
                 />
                 <YAxis tick={{ fill: "#6b7280" }} />
+                {/* ✅ FIXED: Handle undefined name properly */}
                 <Tooltip
                   contentStyle={{
                     backgroundColor: 'white',
                     border: '1px solid #e5e7eb',
                     borderRadius: '12px',
                     padding: '12px',
+                  }}
+                  formatter={(value: any, name?: string) => {
+                    return [`${Number(value).toFixed(2)} W`, "Power"];
                   }}
                 />
                 <Area
@@ -252,7 +417,7 @@ export default function DashboardPage() {
           {/* ===== VOLTAGE & CURRENT (7 DATA) ===== */}
           <div className="rounded-3xl border border-gray-200 bg-white p-8 shadow-sm hover:shadow-xl transition-all duration-300 min-h-100 animate-slideInRight">
             <h3 className="text-2xl font-bold mb-4">
-              Voltage & Current (7 Records)
+              Voltage & Current ({last7Data.length} Records)
             </h3>
             <p className="text-sm text-gray-600 mb-6">
               Avg Voltage: {avgVoltage} V | Avg Current: {avgCurrent} A
@@ -267,12 +432,18 @@ export default function DashboardPage() {
                 />
                 <YAxis yAxisId="left" stroke="#3b82f6" tick={{ fill: "#6b7280" }} />
                 <YAxis yAxisId="right" orientation="right" stroke="#10b981" tick={{ fill: "#6b7280" }} />
+                {/* ✅ FIXED: Handle undefined name properly */}
                 <Tooltip
                   contentStyle={{
                     backgroundColor: 'white',
                     border: '1px solid #e5e7eb',
                     borderRadius: '12px',
                     padding: '12px',
+                  }}
+                  formatter={(value: any, name?: string) => {
+                    if (name === "Voltage (V)") return [`${Number(value).toFixed(2)} V`, name!];
+                    if (name === "Current (A)") return [`${Number(value).toFixed(2)} A`, name!];
+                    return [`${Number(value).toFixed(2)}`, "Value"];
                   }}
                 />
                 <Legend 
@@ -308,7 +479,7 @@ export default function DashboardPage() {
 
       {/* ================= ENERGY CONSUMPTION BAR CHART (7 DATA) ================= */}
       <section className="mt-12 bg-gray-50 p-8 rounded-3xl animate-fadeIn">
-        <h2 className="text-4xl font-bold mb-8">Energy Usage (Last 7 Records)</h2>
+        <h2 className="text-4xl font-bold mb-8">Energy Usage (Last {last7Data.length} Records)</h2>
 
         <div className="rounded-4xl border border-gray-200 bg-white p-10 shadow-sm hover:shadow-xl transition-all duration-300 min-h-175">
           <h3 className="text-3xl font-bold mb-8">
@@ -323,7 +494,7 @@ export default function DashboardPage() {
                   hour: "2-digit",
                   minute: "2-digit",
                 }),
-                energy: item.energi_kwh,
+                energy: Number(item.energi_kwh),
               }))}
               margin={{ top: 20, right: 40, left: 20, bottom: 40 }}
             >
@@ -352,7 +523,7 @@ export default function DashboardPage() {
                         {payload[0].payload.time}
                       </p>
                       <p className="text-green-600 text-base font-semibold">
-                        Energy: {payload[0].value} kWh
+                        Energy: {Number(payload[0].value).toFixed(4)} kWh
                       </p>
                     </div>
                   ) : null
@@ -371,7 +542,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* ================= ADDITIONAL FEATURES (TANPA RELAY CONTROL) ================= */}
+      {/* ================= ADDITIONAL FEATURES ================= */}
       <section className="mt-12 grid grid-cols-1 md:grid-cols-2 gap-6">
         
         {/* ===== CARD 1 - SYSTEM ALERTS ===== */}
@@ -384,26 +555,36 @@ export default function DashboardPage() {
             <div className="bg-green-100 border border-green-300 rounded-2xl p-5 flex gap-3 hover:scale-[1.02] transition-transform duration-200">
               <CheckCircle className="text-green-600 shrink-0" size={24} />
               <div className="flex-1">
-                <p className="font-semibold text-green-900">7 records loaded successfully</p>
+                <p className="font-semibold text-green-900">{last7Data.length} records loaded successfully</p>
                 <p className="text-sm text-green-600 mt-1">Just now</p>
               </div>
             </div>
 
             {/* Alert Warning */}
-            <div className="bg-yellow-100 border border-yellow-200 rounded-2xl p-5 flex gap-3 hover:scale-[1.02] transition-transform duration-200">
-              <AlertTriangle className="text-yellow-600 shrink-0" size={24} />
-              <div className="flex-1">
-                <p className="font-semibold text-yellow-900">Voltage spike detected</p>
-                <p className="text-sm text-yellow-600 mt-1">15 min ago</p>
+            {latest.tegangan > 240 || latest.tegangan < 200 ? (
+              <div className="bg-yellow-100 border border-yellow-200 rounded-2xl p-5 flex gap-3 hover:scale-[1.02] transition-transform duration-200">
+                <AlertTriangle className="text-yellow-600 shrink-0" size={24} />
+                <div className="flex-1">
+                  <p className="font-semibold text-yellow-900">Voltage {voltageStatus.toLowerCase()}</p>
+                  <p className="text-sm text-yellow-600 mt-1">Current: {latest.tegangan.toFixed(2)} V</p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-blue-100 border border-blue-300 rounded-2xl p-5 flex gap-3 hover:scale-[1.02] transition-transform duration-200">
+                <Info className="text-blue-600 shrink-0" size={24} />
+                <div className="flex-1">
+                  <p className="font-semibold text-blue-900">All systems operational</p>
+                  <p className="text-sm text-blue-600 mt-1">Voltage: {latest.tegangan.toFixed(2)} V</p>
+                </div>
+              </div>
+            )}
 
             {/* Alert Info */}
             <div className="bg-blue-100 border border-blue-300 rounded-2xl p-5 flex gap-3 hover:scale-[1.02] transition-transform duration-200">
               <Info className="text-blue-600 shrink-0" size={24} />
               <div className="flex-1">
                 <p className="font-semibold text-blue-900">Database sync active</p>
-                <p className="text-sm text-blue-600 mt-1">1 hour ago</p>
+                <p className="text-sm text-blue-600 mt-1">Hourly energy table</p>
               </div>
             </div>
           </div>
@@ -415,8 +596,8 @@ export default function DashboardPage() {
             <TrendingUp size={24} />
           </div>
 
-          <h3 className="text-3xl font-bold mb-2">Statistics (7 Records)</h3>
-          <p className="text-gray-600 mb-6">Calculated from last 7 data points</p>
+          <h3 className="text-3xl font-bold mb-2">Statistics ({last7Data.length} Records)</h3>
+          <p className="text-gray-600 mb-6">Calculated from last {last7Data.length} data points</p>
 
           <div className="space-y-4">
             {/* Average Power */}
@@ -459,7 +640,6 @@ export default function DashboardPage() {
             <span className="font-bold text-green-600">System Normal</span>
           </div>
         </div>
-
       </section>
 
       {/* ================= CUSTOM ANIMATIONS ================= */}
